@@ -20,6 +20,10 @@ async function handleRequest(request) {
     return handleOwnerConfirmAction(request);
   }
 
+  if (path === '/api/call-owner' && request.method === 'POST') {
+    return handleCallOwner();
+  }
+
   if (path === '/api/check-status') {
     const status = await MOVE_CAR_STATUS.get('notify_status');
     const ownerLocation = await MOVE_CAR_STATUS.get('owner_location');
@@ -94,11 +98,12 @@ async function handleNotify(request, url) {
     const confirmUrl = encodeURIComponent(url.origin + '/owner-confirm');
 
     let notifyBody = '🚗 挪车请求';
-    if (message) notifyBody += `\\n💬 留言: ${message}`;
+    if (message) notifyBody += `\n💬 留言: ${message}`;
 
+    let locationInfo = '';
     if (location && location.lat && location.lng) {
       const urls = generateMapUrls(location.lat, location.lng);
-      notifyBody += '\\n📍 已附带位置信息，点击查看';
+      locationInfo = `\n📍 位置信息：${urls.amapUrl}`;
 
       await MOVE_CAR_STATUS.put('requester_location', JSON.stringify({
         lat: location.lat,
@@ -106,7 +111,7 @@ async function handleNotify(request, url) {
         ...urls
       }), { expirationTtl: CONFIG.KV_TTL });
     } else {
-      notifyBody += '\\n⚠️ 未提供位置信息';
+      notifyBody += '\n⚠️ 未提供位置信息';
     }
 
     await MOVE_CAR_STATUS.put('notify_status', 'waiting', { expirationTtl: 600 });
@@ -116,10 +121,31 @@ async function handleNotify(request, url) {
       await new Promise(resolve => setTimeout(resolve, 30000));
     }
 
-    const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
-
-    const barkResponse = await fetch(barkApiUrl);
-    if (!barkResponse.ok) throw new Error('Bark API Error');
+    // 企业微信机器人推送
+    const wxworkWebhookUrl = typeof WXWORK_WEBHOOK !== 'undefined' ? WXWORK_WEBHOOK : '';
+    
+    if (wxworkWebhookUrl) {
+      const fullMessage = `${notifyBody}${locationInfo}\n\n点击确认：${url.origin}/owner-confirm`;
+      
+      const wxworkResponse = await fetch(wxworkWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          msgtype: "text",
+          text: {
+            content: fullMessage,
+            mentioned_list: ["@all"]
+          }
+        })
+      });
+      
+      if (!wxworkResponse.ok) throw new Error('企业微信机器人API错误');
+    } else {
+      // 如果没有配置企业微信机器人，使用原来的Bark推送
+      const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
+      const barkResponse = await fetch(barkApiUrl);
+      if (!barkResponse.ok) throw new Error('Bark API Error');
+    }
 
     return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' }
@@ -127,6 +153,21 @@ async function handleNotify(request, url) {
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error.message }), { status: 500 });
   }
+}
+
+async function handleCallOwner() {
+  const phone = typeof PHONE_NUMBER !== 'undefined' ? PHONE_NUMBER : '';
+  
+  // 记录呼叫日志（可选）
+  await MOVE_CAR_STATUS.put('last_call_time', Date.now().toString(), { expirationTtl: CONFIG.KV_TTL });
+  
+  return new Response(JSON.stringify({ 
+    success: true, 
+    phone: phone,
+    message: '请使用电话应用拨打车主电话'
+  }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 async function handleGetLocation() {
@@ -364,6 +405,23 @@ function renderMainPage(origin) {
         box-shadow: none;
         cursor: not-allowed;
       }
+
+      .btn-call {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        color: white;
+        border: none;
+        padding: clamp(14px, 3.5vw, 18px);
+        border-radius: clamp(14px, 3.5vw, 18px);
+        font-size: clamp(15px, 4vw, 17px);
+        font-weight: 700;
+        cursor: pointer;
+        display: flex; align-items: center; justify-content: center; gap: 8px;
+        box-shadow: 0 8px 24px rgba(40, 167, 69, 0.3);
+        transition: all 0.2s;
+        min-height: 52px;
+        text-decoration: none;
+      }
+      .btn-call:active { transform: scale(0.98); }
 
       .toast {
         position: fixed;
@@ -672,7 +730,12 @@ function renderMainPage(origin) {
 
       <button id="notifyBtn" class="card btn-main" onclick="sendNotify()">
         <span>🔔</span>
-        <span>一键通知车主</span>
+        <span>微信通知车主挪车</span>
+      </button>
+
+      <button class="btn-call" onclick="callOwner()">
+        <span>📞</span>
+        <span>拨打车主电话挪车</span>
       </button>
     </div>
 
@@ -709,10 +772,17 @@ function renderMainPage(origin) {
     <script>
       let userLocation = null;
       let checkTimer = null;
+      let lastCallTime = 0;
+      const CALL_COOLDOWN = 60000; // 1分钟冷却时间
 
       // 页面加载时显示提示弹窗
       window.onload = () => {
         showModal('locationTipModal');
+        // 尝试从localStorage获取上次呼叫时间
+        const storedTime = localStorage.getItem('lastCallTime');
+        if (storedTime) {
+          lastCallTime = parseInt(storedTime);
+        }
       };
 
       function showModal(id) {
@@ -789,7 +859,42 @@ function renderMainPage(origin) {
         } catch (e) {
           showToast('❌ 发送失败，请重试');
           btn.disabled = false;
-          btn.innerHTML = '<span>🔔</span><span>一键通知车主</span>';
+          btn.innerHTML = '<span>🔔</span><span>微信通知车主挪车</span>';
+        }
+      }
+
+      // 一键呼叫车主
+      async function callOwner() {
+        const now = Date.now();
+        if (now - lastCallTime < CALL_COOLDOWN) {
+          const remaining = Math.ceil((CALL_COOLDOWN - (now - lastCallTime)) / 1000);
+          showToast(\`请等待 \${remaining} 秒后再试\`);
+          return;
+        }
+
+        try {
+          const res = await fetch('/api/call-owner', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            showToast('✅ 正在呼叫车主...');
+            
+            // 记录呼叫时间
+            lastCallTime = now;
+            localStorage.setItem('lastCallTime', now.toString());
+            
+            // 延迟一点时间后拨打电话
+            setTimeout(() => {
+              window.location.href = \`tel:\${data.phone}\`;
+            }, 500);
+          } else {
+            throw new Error('呼叫失败');
+          }
+        } catch (e) {
+          showToast('❌ 呼叫失败，请重试');
         }
       }
 
