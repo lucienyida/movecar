@@ -5,6 +5,11 @@ addEventListener('fetch', event => {
 const CONFIG = { KV_TTL: 3600 }
 
 async function handleRequest(request) {
+  const country = request.cf?.country;
+  if (country && country !== 'CN') {
+    return new Response('Access Denied', { status: 403 });
+  }
+
   const url = new URL(request.url)
   const path = url.pathname
 
@@ -98,12 +103,12 @@ async function handleNotify(request, url) {
     const confirmUrl = encodeURIComponent(url.origin + '/owner-confirm');
 
     let notifyBody = '🚗 挪车请求';
-    if (message) notifyBody += `\n💬 留言: ${message}`;
+    if (message) notifyBody += `\n\n💬 留言: ${message}`;
 
     let locationInfo = '';
     if (location && location.lat && location.lng) {
       const urls = generateMapUrls(location.lat, location.lng);
-      locationInfo = `\n📍 位置信息：${urls.amapUrl}`;
+      locationInfo = `\n\n📍 位置信息：${urls.amapUrl}`;
 
       await MOVE_CAR_STATUS.put('requester_location', JSON.stringify({
         lat: location.lat,
@@ -111,7 +116,7 @@ async function handleNotify(request, url) {
         ...urls
       }), { expirationTtl: CONFIG.KV_TTL });
     } else {
-      notifyBody += '\n⚠️ 未提供位置信息';
+      notifyBody += '\n\n⚠️ 未提供位置信息';
     }
 
     await MOVE_CAR_STATUS.put('notify_status', 'waiting', { expirationTtl: 600 });
