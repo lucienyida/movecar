@@ -97,8 +97,8 @@
 
 1. Worker →「Settings」→「Variables and Secrets」
 2. 添加以下变量：
-   - `BARK_URL`：你的 Bark 推送地址（如 `https://api.day.app/xxxxx`）
-   - `PHONE_NUMBER`：备用联系电话（可选）
+   - `WXWORK_WEBHOOK`：你的企业微信机器人推送地址（如`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx-xxxx-xxx`）
+   - `PHONE_NUMBER`：联系电话
 
 ### 第五步：绑定域名（可选）
 
