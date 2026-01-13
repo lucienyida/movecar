@@ -93,6 +93,71 @@ function generateMapUrls(lat, lng) {
   };
 }
 
+// 新增：获取逆地理编码地址
+async function getReverseGeocode(lat, lng, amapKey) {
+  try {
+    const gcj = wgs84ToGcj02(lat, lng);
+    const response = await fetch(`https://restapi.amap.com/v3/geocode/regeo?key=${amapKey}&location=${gcj.lng},${gcj.lat}&extensions=base&radius=1000`);
+    
+    if (!response.ok) {
+      console.error('逆地理编码API请求失败:', response.status);
+      return `${gcj.lng},${gcj.lat}`;
+    }
+    
+    const data = await response.json();
+    
+    if (data.status === '1' && data.regeocode && data.regeocode.formatted_address) {
+      return data.regeocode.formatted_address;
+    } else {
+      console.error('逆地理编码返回错误:', data.info);
+      return `${gcj.lng},${gcj.lat}`;
+    }
+  } catch (error) {
+    console.error('逆地理编码请求异常:', error);
+    return `${gcj.lng},${gcj.lat}`;
+  }
+}
+
+// 新增：获取静态地图URL
+function getStaticMapUrl(lat, lng, amapKey) {
+  const gcj = wgs84ToGcj02(lat, lng);
+  // 使用700*500尺寸，清晰且符合比例
+  return `https://restapi.amap.com/v3/staticmap?location=${gcj.lng},${gcj.lat}&zoom=15&size=1000*700&markers=mid,0xFF0000,A:${gcj.lng},${gcj.lat}&key=${amapKey}`;
+}
+
+// 新增：将图片转换为base64并计算md5
+async function getImageBase64AndMd5(imageUrl) {
+  try {
+    // 获取图片
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`图片获取失败: ${response.status}`);
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // 转换为base64
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    
+    // 计算md5
+    const md5 = await calculateMd5(arrayBuffer);
+    
+    return { base64, md5 };
+  } catch (error) {
+    console.error('图片处理失败:', error);
+    throw error;
+  }
+}
+
+// 新增：计算MD5哈希值
+async function calculateMd5(arrayBuffer) {
+  // 使用crypto API计算MD5
+  const hashBuffer = await crypto.subtle.digest('MD5', arrayBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
+
 async function handleNotify(request, url) {
   try {
     const body = await request.json();
@@ -102,21 +167,35 @@ async function handleNotify(request, url) {
 
     const confirmUrl = encodeURIComponent(url.origin + '/owner-confirm');
 
-    let notifyBody = '🚗 挪车请求';
-    if (message) notifyBody += `\n\n💬 留言: ${message}`;
-
     let locationInfo = '';
+    let staticMapUrl = '';
+    let formattedAddress = '';
+
+    // 获取高德Key
+    const amapKey = typeof AMAP_KEY !== 'undefined' ? AMAP_KEY : '';
+
     if (location && location.lat && location.lng) {
       const urls = generateMapUrls(location.lat, location.lng);
-      locationInfo = `\n\n📍 位置信息：${urls.amapUrl}`;
+      
+      // 如果配置了高德Key，获取逆地理编码地址和静态地图
+      if (amapKey) {
+        // 获取逆地理编码地址
+        formattedAddress = await getReverseGeocode(location.lat, location.lng, amapKey);
+        // 获取静态地图URL
+        staticMapUrl = getStaticMapUrl(location.lat, location.lng, amapKey);
+      } else {
+        formattedAddress = `${urls.amapUrl}`;
+      }
 
       await MOVE_CAR_STATUS.put('requester_location', JSON.stringify({
         lat: location.lat,
         lng: location.lng,
+        address: formattedAddress,
+        mapUrl: staticMapUrl,
         ...urls
       }), { expirationTtl: CONFIG.KV_TTL });
     } else {
-      notifyBody += '\n\n⚠️ 未提供位置信息';
+      formattedAddress = '未提供位置信息';
     }
 
     await MOVE_CAR_STATUS.put('notify_status', 'waiting', { expirationTtl: 600 });
@@ -130,24 +209,75 @@ async function handleNotify(request, url) {
     const wxworkWebhookUrl = typeof WXWORK_WEBHOOK !== 'undefined' ? WXWORK_WEBHOOK : '';
     
     if (wxworkWebhookUrl) {
-      const fullMessage = `${notifyBody}${locationInfo}\n\n点击确认：${url.origin}/owner-confirm`;
+      // 如果有静态地图URL且配置了高德Key，先发送图片消息
+      if (staticMapUrl && amapKey) {
+        try {
+          // 获取图片的base64和md5
+          const { base64, md5 } = await getImageBase64AndMd5(staticMapUrl);
+          
+          // 发送图片消息
+          const imageResponse = await fetch(wxworkWebhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              msgtype: "image",
+              image: {
+                base64: base64,
+                md5: md5
+              }
+            })
+          });
+          
+          if (!imageResponse.ok) {
+            console.error('企业微信图片消息发送失败');
+          }
+          
+          // 等待1秒再发送文本消息，确保顺序
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (imageError) {
+          console.error('图片消息处理失败:', imageError);
+          // 如果图片消息失败，继续发送文本消息
+        }
+      }
       
-      const wxworkResponse = await fetch(wxworkWebhookUrl, {
+      // 构建文本消息内容
+      let textMessage = '🚗 挪车请求\n\n';
+      
+      if (message) {
+        textMessage += `💬 留言: ${message}\n\n`;
+      }
+      
+      textMessage += `📍 位置信息：${formattedAddress}附近\n\n`;
+      textMessage += `✅ 点击确认：${url.origin}/owner-confirm`;
+      
+      // 发送文本消息
+      const textResponse = await fetch(wxworkWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           msgtype: "text",
           text: {
-            content: fullMessage,
-            mentioned_list: ["@all"]
+            content: textMessage
           }
         })
       });
       
-      if (!wxworkResponse.ok) throw new Error('企业微信机器人API错误');
+      if (!textResponse.ok) throw new Error('企业微信文本消息API错误');
     } else {
       // 如果没有配置企业微信机器人，使用原来的Bark推送
-      const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(notifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
+      let notifyBody = '🚗 挪车请求';
+      if (message) notifyBody += `\n\n💬 留言: ${message}`;
+      
+      let locationInfo = '';
+      if (location && location.lat && location.lng) {
+        const urls = generateMapUrls(location.lat, location.lng);
+        locationInfo = `\n\n📍 位置信息：${urls.amapUrl}`;
+      } else {
+        notifyBody += '\n\n⚠️ 未提供位置信息';
+      }
+      
+      const fullNotifyBody = `${notifyBody}${locationInfo}`;
+      const barkApiUrl = `${BARK_URL}/挪车请求/${encodeURIComponent(fullNotifyBody)}?group=MoveCar&level=critical&call=1&sound=minuet&icon=https://cdn-icons-png.flaticon.com/512/741/741407.png&url=${confirmUrl}`;
       const barkResponse = await fetch(barkApiUrl);
       if (!barkResponse.ok) throw new Error('Bark API Error');
     }
@@ -552,7 +682,7 @@ function renderMainPage(origin) {
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       .loading-text { animation: pulse 1.5s ease-in-out infinite; }
 
-      /* 弹窗样式 */
+      /* 弹窗样式 - 从挪车.js复制过来 */
       .modal-overlay {
         position: fixed;
         inset: 0;
@@ -718,10 +848,10 @@ function renderMainPage(origin) {
       <div class="card input-card">
         <textarea id="msgInput" placeholder="输入留言给车主...（可选）"></textarea>
         <div class="tags">
-          <div class="tag" onclick="addTag('您的车挡住我了')">🚧 挡路</div>
-          <div class="tag" onclick="addTag('临时停靠一下')">⏱️ 临停</div>
-          <div class="tag" onclick="addTag('电话打不通')">📞 没接</div>
-          <div class="tag" onclick="addTag('麻烦尽快')">🙏 加急</div>
+          <div class="tag" onclick="addTag('您的车挡住我了，尽快过来挪下车...')">🚧 挡路</div>
+          <div class="tag" onclick="addTag('临时停靠，不慎挡车，深表歉意。移车请拨：')">⏱️ 临停</div>
+          <div class="tag" onclick="addTag('电话打不通,')">📞 没接</div>
+          <div class="tag" onclick="addTag('麻烦尽快过来挪下车...')">🙏 加急</div>
         </div>
       </div>
 
