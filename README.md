@@ -8,6 +8,9 @@
 |:---:|:---:|
 | [🔗 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-requester.html) | [🔗 在线预览](https://htmlpreview.github.io/?https://github.com/lesnolie/movecar/blob/main/preview-owner.html) |
 
+## 推送效果
+![推送效果图](推送效果图.jpg)
+
 ## 为什么需要它？
 
 - 🚗 **被堵车却找不到车主** - 干着急没办法
@@ -133,8 +136,7 @@
 > 💡 用 AI 生成独一无二的挪车牌，让你的爱车更有个性！
 
 ### 效果展示
-
-![推送效果图](推送效果图.jpg)
+![挪车码效果](demo.jpg)
 
 ## 安全设置（推荐）
 
