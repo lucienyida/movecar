@@ -1,4 +1,4 @@
-﻿# MoveCar - 挪车通知系统
+﻿# MoveCar - 挪车通知系统 - 企微机器人双信息通知
 
 基于 Cloudflare Workers 的智能挪车通知系统，扫码即可通知车主，保护双方隐私。
 
@@ -42,7 +42,7 @@
 
 ### 车主
 
-1. 收到 Bark 推送通知
+1. 收到 消息 推送通知
 2. 点击通知进入确认页面
 3. 查看请求者位置（判断是否真的在车旁）
 4. 点击确认，分享自己位置给对方
@@ -99,6 +99,8 @@
 2. 添加以下变量：
    - `WXWORK_WEBHOOK`：你的企业微信机器人推送地址（如`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx-xxxx-xxx`）
    - `PHONE_NUMBER`：联系电话
+   - `AMAP_KEY`：高德api key （高德开发平台-控制台-我的应用-新建应用，新建应用服务平台选"web服务"，其他随意
+
 
 ### 第五步：绑定域名（可选）
 
